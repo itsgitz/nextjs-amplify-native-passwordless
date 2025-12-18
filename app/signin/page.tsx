@@ -10,7 +10,6 @@ import {
     getCurrentUser,
 } from "aws-amplify/auth";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 
 type SignInStep = "ENTER_EMAIL" | "CONFIRM_OTP" | "DONE";
 type AuthFlow = "SIGN_UP" | "SIGN_IN";
@@ -258,17 +257,6 @@ export default function SignIn() {
                                 >
                                     {loading ? "Sending..." : "Send Code"}
                                 </button>
-                                <div className="text-center">
-                                    <p className="text-sm text-zinc-600 dark:text-zinc-400">
-                                        Don't have an account?{" "}
-                                        <Link
-                                            href="/signup"
-                                            className="text-blue-600 dark:text-blue-400 hover:underline font-medium"
-                                        >
-                                            Sign Up
-                                        </Link>
-                                    </p>
-                                </div>
                             </form>
                         </>
                     )}
@@ -299,7 +287,7 @@ export default function SignIn() {
                                         value={otp}
                                         onChange={(e) => setOtp(e.target.value)}
                                         className="w-full px-4 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-900 text-center text-2xl tracking-widest"
-                                        placeholder="000000"
+                                        placeholder={authFlow === "SIGN_UP" ? "000000" : "00000000"}
                                         required
                                         disabled={loading}
                                         maxLength={8}
