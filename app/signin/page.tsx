@@ -5,18 +5,22 @@ import {
     signIn,
     confirmSignIn,
     signUp,
+    confirmSignUp,
+    autoSignIn,
     getCurrentUser,
 } from "aws-amplify/auth";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
 type SignInStep = "ENTER_EMAIL" | "CONFIRM_OTP" | "DONE";
+type AuthFlow = "SIGN_UP" | "SIGN_IN";
 
 export default function SignIn() {
     const router = useRouter();
     const [email, setEmail] = useState("");
     const [otp, setOtp] = useState("");
     const [step, setStep] = useState<SignInStep>("ENTER_EMAIL");
+    const [authFlow, setAuthFlow] = useState<AuthFlow>("SIGN_UP");
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
 
@@ -40,85 +44,104 @@ export default function SignIn() {
         setError("");
 
         try {
-            const { nextStep } = await signIn({
+            // Try to sign up first (this is the recommended approach for passwordless)
+            console.log("Attempting to sign up user...");
+            const { nextStep: signUpStep } = await signUp({
                 username: email,
                 options: {
-                    authFlowType: "USER_AUTH",
-                    preferredChallenge: "EMAIL_OTP",
+                    userAttributes: {
+                        email: email,
+                    },
+                    autoSignIn: {
+                        authFlowType: "USER_AUTH",
+                    },
                 },
             });
 
-            console.log("Next step:", nextStep);
+            console.log("Sign up next step:", signUpStep);
 
-            if (nextStep.signInStep === "CONFIRM_SIGN_IN_WITH_EMAIL_CODE") {
+            // After sign-up, check the next step
+            if (signUpStep.signUpStep === "CONFIRM_SIGN_UP") {
+                // User needs to confirm email with OTP, move to OTP step
+                setAuthFlow("SIGN_UP");
                 setStep("CONFIRM_OTP");
-            } else if (
-                nextStep.signInStep ===
-                "CONTINUE_SIGN_IN_WITH_FIRST_FACTOR_SELECTION"
-            ) {
-                // User has multiple auth methods, select EMAIL_OTP
-                const { nextStep: selectStep } = await confirmSignIn({
-                    challengeResponse: "EMAIL_OTP",
+            } else if (signUpStep.signUpStep === "DONE") {
+                // Auto sign-in after sign-up
+                const { nextStep } = await signIn({
+                    username: email,
+                    options: {
+                        authFlowType: "USER_AUTH",
+                        preferredChallenge: "EMAIL_OTP",
+                    },
                 });
 
                 if (
-                    selectStep.signInStep === "CONFIRM_SIGN_IN_WITH_EMAIL_CODE"
+                    nextStep.signInStep ===
+                    "CONFIRM_SIGN_IN_WITH_EMAIL_CODE"
                 ) {
+                    setAuthFlow("SIGN_IN");
                     setStep("CONFIRM_OTP");
+                } else if (
+                    nextStep.signInStep ===
+                    "CONTINUE_SIGN_IN_WITH_FIRST_FACTOR_SELECTION"
+                ) {
+                    // User has multiple auth methods, select EMAIL_OTP
+                    const { nextStep: selectStep } = await confirmSignIn({
+                        challengeResponse: "EMAIL_OTP",
+                    });
+
+                    if (
+                        selectStep.signInStep === "CONFIRM_SIGN_IN_WITH_EMAIL_CODE"
+                    ) {
+                        setAuthFlow("SIGN_IN");
+                        setStep("CONFIRM_OTP");
+                    }
                 }
             }
         } catch (err: any) {
-            console.error("Error signing in:", err);
+            console.error("Error during sign up:", err);
 
-            // If user doesn't exist, automatically sign them up
+            // If user already exists, try to sign in instead
             if (
-                err.name === "UserNotFoundException" ||
-                err.message?.includes("User does not exist")
+                err.name === "UsernameExistsException" ||
+                err.message?.includes("An account with the given email already exists")
             ) {
                 try {
-                    console.log("User not found, creating new user...");
-
-                    // Sign up the user with email (no password needed for OTP)
-                    const { nextStep: signUpStep } = await signUp({
+                    console.log("User already exists, signing in...");
+                    const { nextStep } = await signIn({
                         username: email,
                         options: {
-                            userAttributes: {
-                                email: email,
-                            },
-                            autoSignIn: {
-                                authFlowType: "USER_AUTH",
-                            },
+                            authFlowType: "USER_AUTH",
+                            preferredChallenge: "EMAIL_OTP",
                         },
                     });
 
-                    console.log("Sign up next step:", signUpStep);
+                    console.log("Sign in next step:", nextStep);
 
-                    // After sign-up, initiate sign-in with OTP
-                    if (signUpStep.signUpStep === "CONFIRM_SIGN_UP") {
-                        // User needs to confirm email, move to OTP step
+                    if (nextStep.signInStep === "CONFIRM_SIGN_IN_WITH_EMAIL_CODE") {
+                        setAuthFlow("SIGN_IN");
                         setStep("CONFIRM_OTP");
-                    } else if (signUpStep.signUpStep === "DONE") {
-                        // Auto sign-in after sign-up
-                        const { nextStep } = await signIn({
-                            username: email,
-                            options: {
-                                authFlowType: "USER_AUTH",
-                                preferredChallenge: "EMAIL_OTP",
-                            },
+                    } else if (
+                        nextStep.signInStep ===
+                        "CONTINUE_SIGN_IN_WITH_FIRST_FACTOR_SELECTION"
+                    ) {
+                        // User has multiple auth methods, select EMAIL_OTP
+                        const { nextStep: selectStep } = await confirmSignIn({
+                            challengeResponse: "EMAIL_OTP",
                         });
 
                         if (
-                            nextStep.signInStep ===
-                            "CONFIRM_SIGN_IN_WITH_EMAIL_CODE"
+                            selectStep.signInStep === "CONFIRM_SIGN_IN_WITH_EMAIL_CODE"
                         ) {
+                            setAuthFlow("SIGN_IN");
                             setStep("CONFIRM_OTP");
                         }
                     }
-                } catch (signUpErr: any) {
-                    console.error("Error signing up:", signUpErr);
+                } catch (signInErr: any) {
+                    console.error("Error signing in:", signInErr);
                     setError(
-                        signUpErr.message ||
-                            "Failed to create account. Please try again.",
+                        signInErr.message ||
+                            "Failed to send OTP. Please try again.",
                     );
                 }
             } else {
@@ -137,16 +160,43 @@ export default function SignIn() {
         setError("");
 
         try {
-            // Try to confirm sign-in (works for both sign-up and sign-in flows)
-            const { nextStep } = await confirmSignIn({
-                challengeResponse: otp,
-            });
+            if (authFlow === "SIGN_UP") {
+                // Confirm sign-up with OTP
+                const { nextStep } = await confirmSignUp({
+                    username: email,
+                    confirmationCode: otp,
+                });
 
-            console.log("Confirm next step:", nextStep);
+                console.log("Confirm sign up next step:", nextStep);
 
-            if (nextStep.signInStep === "DONE") {
-                setStep("DONE");
-                router.push("/");
+                if (nextStep.signUpStep === "COMPLETE_AUTO_SIGN_IN") {
+                    // Complete the auto sign-in process
+                    console.log("Completing auto sign-in...");
+                    const signInResult = await autoSignIn();
+                    console.log("Auto sign-in result:", signInResult);
+
+                    if (signInResult.isSignedIn) {
+                        setStep("DONE");
+                        router.push("/");
+                    }
+                } else if (nextStep.signUpStep === "DONE") {
+                    // Sign up is complete, but need to sign in manually
+                    // This shouldn't happen with autoSignIn enabled, but handle it
+                    setStep("DONE");
+                    router.push("/");
+                }
+            } else {
+                // Confirm sign-in with OTP
+                const { nextStep } = await confirmSignIn({
+                    challengeResponse: otp,
+                });
+
+                console.log("Confirm sign in next step:", nextStep);
+
+                if (nextStep.signInStep === "DONE") {
+                    setStep("DONE");
+                    router.push("/");
+                }
             }
         } catch (err: any) {
             console.error("Error confirming OTP:", err);
@@ -274,6 +324,7 @@ export default function SignIn() {
                                         setStep("ENTER_EMAIL");
                                         setOtp("");
                                         setError("");
+                                        setAuthFlow("SIGN_UP");
                                     }}
                                     className="w-full px-4 py-2 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors text-sm"
                                 >
